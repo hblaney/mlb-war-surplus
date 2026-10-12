@@ -2,7 +2,7 @@
 
 I built a 2026 position-player WAR from Statcast batting and OAA, priced a win off free agents, then compared that to what guys actually made.
 
-The memo is [report.html](report.html).
+The memo is [report.md](report.md).
 
 xBA fielding had Brandon Lowe at 8 WAR with +32 glove runs. That was the model, not him. With OAA, Crow-Armstrong is 10.1 WAR (26 OAA) and Lowe is 5.9 (15 OAA).
 
@@ -12,4 +12,4 @@ FAs: about $6.45M per WAR. Corr 0.41, R² 0.17. One year of WAR does not track o
 
 This folder. `tidyverse`, `sabRmetrics`, `readr`.
 
-Outputs are already in `data/`. Open [report.html](report.html), or knit `report.Rmd`. To rebuild WAR, delete `data/player_war_2026.csv` and run `analysis.qmd`. The pitch `.rds` stays local.
+Outputs are already in `data/`. The writeup is [report.md](report.md). To rebuild WAR, delete `data/player_war_2026.csv` and run `analysis.qmd`. The pitch `.rds` stays local.
