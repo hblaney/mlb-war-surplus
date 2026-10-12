@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>2026 WAR vs what teams actually paid</title>
+  <style>
+    body { font-family: Georgia, serif; max-width: 760px; margin: 48px auto 96px; padding: 0 20px; line-height: 1.55; color: #1a1a1a; }
+    h1 { font-size: 1.75rem; margin-bottom: 0.15em; }
+    .sub { color: #555; margin: 0 0 1.6em; }
+    h2 { font-size: 1.25rem; margin-top: 2.1em; }
+    h3 { font-size: 1.05rem; margin-top: 1.4em; }
+    img { max-width: 100%; height: auto; display: block; margin: 1em 0 0.4em; }
+    .cap { color: #555; font-size: 0.92rem; margin: 0 0 1.4em; }
+    table { border-collapse: collapse; margin: 1em 0 1.4em; width: 100%; font-size: 0.95rem; }
+    td, th { border-bottom: 1px solid #ddd; padding: 6px 10px 6px 0; text-align: left; vertical-align: top; }
+    th { border-bottom: 2px solid #333; }
+    ol, ul { padding-left: 1.25em; }
+    code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; }
+    .eq { font-style: italic; }
+  </style>
+</head>
+<body>
+<h1>2026 WAR vs what teams actually paid</h1>
+<p class="sub">Custom Statcast WAR with an OAA glove, then a free-agent price per win<br>
+Henry Blaney</p>
+
+<h2>1. Background</h2>
+
+<p>MLB teams spend very unevenly. In 2026 the Mets spent more than $350 million and finished last in the NL East; the Marlins, with an $85 million payroll, came in third. Spending does not guarantee winning. What matters is whether teams pay for the right players.</p>
+
+<p>Labor rules split the market into three tiers:</p>
+<ul>
+  <li><strong>Pre-arbitration.</strong> Fewer than three years of service. Pay sits near the league minimum, whatever the player produces.</li>
+  <li><strong>Arbitration.</strong> Three to six years. Salary is set by negotiation or a panel, mostly off comparable players.</li>
+  <li><strong>Free agency.</strong> After six years a player can sell his services to all 30 teams. This is the one place salary reveals what clubs will pay for performance on an open market. Long-term extensions that bought out free-agent years are treated as FA here.</li>
+</ul>
+
+<p>Comparing performance to pay needs one currency for performance. WAR converts hitting and fielding into runs, compares the player with a freely available replacement, and turns runs into wins. Because wins are what teams are buying, a dollars-per-WAR number can be compared across players and contract types.</p>
+
+<p><strong>Question.</strong> Can WAR explain 2026 position-player salaries, and which players are worth more or less than they are paid?</p>
+
+<p>We build WAR ourselves rather than downloading FanGraphs or Baseball-Reference values, so every modeling choice is visible. The steps are: download and clean Statcast, compute batting runs above average, attach Statcast Outs Above Average as the glove, convert to WAR with a replacement level, join salaries, estimate the market price of a win from free agents, and compute surplus and value WAR.</p>
+
+<p>An earlier glove used xBA leftovers. This memo uses OAA. See §3.1.</p>
+
+<h2>2. Data</h2>
+
+<h3>2.1 Statcast</h3>
+
+<p>Pitch-level 2026 regular-season Statcast from Baseball Savant via <code>sabRmetrics::download_baseballsavant()</code>. Each row has game state, the pitch outcome, batted-ball measurements, and MLBAM IDs for the batter, pitcher, and fielders. A full-season pull is cached as <code>statcast_2026.rds</code> (not in the repo). The file has 716,792 pitches.</p>
+
+<p>The <code>events</code> column is filled only on the last pitch of a plate appearance, so dropping missing <code>events</code> gives one row per PA: 184,178 plate appearances. Each PA row carries <code>delta_run_exp</code> for that last pitch.</p>
+
+<h3>2.2 Salaries</h3>
+
+<p>2026 salaries were collected by hand from Spotrac into <code>salaries_2026.csv</code>. Columns: <code>batter_id</code> (MLBAM), team, name, salary, <code>service_class</code> (Pre-Arb / Arb / FA), extension flag, notes. This is the only external file that cannot be rebuilt from Savant. Join is on <code>batter_id</code>, not name, because First Last vs Last, First will drop or double-count people.</p>
+
+<p>361 salary rows. After an inner join to the 390 regulars and dropping blank pay, <strong>136 players</strong> have both WAR and a salary: 92 FA, 14 arb, 30 pre-arb. Players with a salary but no WAR are outside the top 390 in PA, often because of injury. They drop out of the surplus tables, which makes the overpaid list look cleaner than reality.</p>
+
+<h3>2.3 OAA</h3>
+
+<p>2026 Baseball Savant Outs Above Average leaderboard (<code>data/oaa_2026.csv</code>), 563 fielders, minimum 1 opportunity. Columns we use: <code>player_id</code>, <code>outs_above_average</code>, <code>fielding_runs_prevented</code>, primary position. Catchers are not on this board.</p>
+
+<h2>3. Methods</h2>
+
+<h3>3.1 Fielding: OAA, not xBA</h3>
+
+<p>The first glove scored each ball in play as <code>expected_babip − hit</code>, credited whoever <code>hit_location</code> said handled the ball, summed, and multiplied by 1/3 to get to runs. xBA is exit velocity and launch angle only. A liner at the second baseman and a liner in the gap get the same expected hit rate, so converting a hard grounder you were standing on looked like extra defense. Errors and fielder’s choices coded as non-hits added credit. Home runs charged fielders for balls nobody could catch. Credit went to whoever picked the ball up, not who should have made the play.</p>
+
+<p>That glove put Brandon Lowe first overall: <strong>8.0 WAR</strong> and <strong>+32 fielding runs</strong> as a second baseman. Pete Crow-Armstrong, an elite CF, had <strong>+1.8</strong> fielding runs. That ranking was the model.</p>
+
+<p>This version uses Statcast <strong>Outs Above Average</strong>. OAA is a range model: given starting position, where the ball went, and hang time, did you get there? Hard contact is in that through time. Savant already translates those outs into runs with a position-specific factor, <code>fielding_runs_prevented</code>. We join on MLBAM id and take that as fielding RAA. Players not on the leaderboard (catchers, DH, no chances) get 0.</p>
+
+<p>After the swap:</p>
+<table>
+  <tr><th></th><th>xBA glove</th><th>OAA glove</th></tr>
+  <tr><td>Crow-Armstrong</td><td>7.9 WAR, +1.8 fielding</td><td><strong>10.1 WAR</strong>, 26 OAA / +23 runs</td></tr>
+  <tr><td>Brandon Lowe</td><td><strong>8.0 WAR</strong>, +32 fielding</td><td>5.9 WAR, 15 OAA / +11 runs</td></tr>
+</table>
+<p>PCA is a glove-first center fielder. Lowe is a good regular. That is why OAA is the glove in this memo.</p>
+
+<p>Willson Contreras is a catcher. He shows 1 OAA / 0 runs prevented as a 1B on the Savant board; his 6.2 WAR is almost entirely bat plus replacement. Catcher framing, blocking, and throwing are not here.</p>
+
+<h3>3.2 Batting runs</h3>
+
+<p>For each batter, count PA and sum <code>delta_run_exp</code> on PA-ending pitches. Compare him with a league-average hitter given the same playing time:</p>
+<p class="eq">RAA_b = off_runs − r̄ × PA, where r̄ is league offensive runs per PA.</p>
+<p>League average is about <strong>0.0068 runs per PA</strong>. Run expectancy is built so the average outcome adds almost nothing, so a number that small is expected. This is hitting only. Summing the last pitch of the PA means a walk is ball four, and stolen bases or wild pitches during that PA stay with the batter.</p>
+
+<h3>3.3 Replacement and WAR</h3>
+
+<p>Batters are ranked by PA. The top <strong>390</strong> are the regulars: 13 position-player jobs × 30 teams. The 390th regular has <strong>166 PA</strong>. Everyone below that is the replacement pool (call-ups, bench, pitchers who batted).</p>
+<p class="eq">ρ = (sum of total RAA in the replacement pool) / (sum of PA in the pool).</p>
+<p>Replacement level is about <strong>−0.038 runs per PA</strong>. Over ~650 PA that is roughly 24 runs below average. That gap is the cushion every regular is measured against.</p>
+<p>Total RAA = batting RAA + fielding RAA. A replacement player given the same PA would produce ρ × PA. WAR is the gap, at 10 runs per win:</p>
+<p class="eq">WAR = (RAA − ρ × PA) / 10.</p>
+
+<h3>3.4 Pricing a win</h3>
+
+<p>Pre-arb and arb pay are set by the CBA, not by bidding among 30 teams. We estimate the price of a win from <strong>free agents only</strong>, regression through the origin:</p>
+<p class="eq">salary ($M) = β × WAR + error, intercept fixed at 0.</p>
+<p>A zero-WAR player is freely available and should cost about nothing extra on this scale, so the intercept is zero by construction. Across 92 FAs, <strong>β̂ ≈ $6.45 million per WAR</strong>. A 3-WAR regular would be worth about $19 million a year on that market.</p>
+
+<p>Expected salary = max(β̂ × WAR, 0). We floor at zero because nobody is paid a negative salary. Surplus = expected − actual. Positive surplus is a bargain relative to 2026 production. Value WAR puts the same gap in wins:</p>
+<p class="eq">value WAR = WAR − salary / β̂.</p>
+<p>If the contract is cheap, you subtract almost nothing. If the AAV is $40 million, the player has to put up about 6.2 WAR in that season to break even.</p>
+
+<p>A second regression, <em>with</em> an intercept, is only for “does WAR explain salary?” It is not the price we use for surplus. Among FAs that fit is intercept ≈ $9.9M, slope ≈ $3.37 per extra WAR, R² = 0.17. Even a replacement-level FA still gets paid a large base; extra WAR does not map one-for-one onto extra dollars. Mixing that intercept with the $6.45M through-origin line as if they were the same model would be wrong.</p>
+
+<h2>4. Results</h2>
+
+<h3>4.1 On-field WAR</h3>
+<table>
+  <tr><th>Player</th><th>PA</th><th>Batting RAA</th><th>OAA</th><th>Fielding runs</th><th>WAR</th></tr>
+  <tr><td>Pete Crow-Armstrong</td><td>726</td><td>50.9</td><td>26</td><td>+23</td><td>10.1</td></tr>
+  <tr><td>Yordan Alvarez</td><td>691</td><td>49.9</td><td>−3</td><td>−3</td><td>7.3</td></tr>
+  <tr><td>Willson Contreras</td><td>536</td><td>42.2</td><td>1</td><td>0</td><td>6.2</td></tr>
+  <tr><td>Pete Alonso</td><td>701</td><td>34.7</td><td>0</td><td>0</td><td>6.1</td></tr>
+  <tr><td>Randy Arozarena</td><td>671</td><td>38.7</td><td>−5</td><td>−4</td><td>6.0</td></tr>
+  <tr><td>Brandon Lowe</td><td>656</td><td>23.5</td><td>15</td><td>+11</td><td>5.9</td></tr>
+</table>
+<p>Crow-Armstrong is first because the bat was already excellent and OAA finally counts CF range. Alvarez is almost all bat. Lowe is no longer an 8-WAR second baseman.</p>
+
+<h3>4.2 Does WAR explain salary?</h3>
+
+<p>FA correlation, WAR vs salary: <strong>0.41</strong>. All 136 paid players: a bit lower. With an intercept, WAR explains <strong>16.9%</strong> of the spread in FA salary (p &lt; 0.001). 2026 WAR does not explain 2026 FA pay. That is what we should expect. A contract is priced on expected performance over several future years, usually from previous seasons and age. Our WAR is one realized year. Injuries, slumps, breakouts, and aging all move a player off the line.</p>
+
+<p><img src="figs/war_vs_salary.png" alt="WAR versus 2026 salary"></p>
+<p class="cap">Figure 1. 2026 salary vs custom WAR, by contract class. Black line is the free-agent price ($6.45M per WAR, through the origin). Pre-arb (green) sits low across the whole WAR range because those salaries are not an open market. Points far above the line on the left are expensive veterans with low 2026 WAR. Points below the line on the right outperformed the contract this year.</p>
+
+<p>We still use that line as the sticker price of a win when we compute surplus. Weak correlation is the answer to question 1, not a reason to throw out the price.</p>
+
+<h3>4.3 Surplus by contract class</h3>
+
+<p><img src="figs/surplus_by_class.png" alt="Mean surplus by class"></p>
+<p class="cap">Figure 2. Mean surplus vs the FA price.</p>
+<table>
+  <tr><th>Class</th><th>n</th><th>Mean WAR</th><th>Mean salary</th><th>Mean surplus</th></tr>
+  <tr><td>Pre-arb</td><td>30</td><td>1.85</td><td>$3.3M</td><td><strong>+$9.0M</strong></td></tr>
+  <tr><td>Arb</td><td>14</td><td>2.47</td><td>$9.1M</td><td><strong>+$6.8M</strong></td></tr>
+  <tr><td>FA</td><td>92</td><td>1.92</td><td>$16.4M</td><td><strong>−$3.9M</strong></td></tr>
+</table>
+<p>When the bargain list is heavy on pre-arb and arb, that is the CBA. Young stars are cheap by design. The more interesting bargains are free agents, because those teams chose the price.</p>
+
+<h3>4.4 Value WAR</h3>
+
+<p><img src="figs/value_war.png" alt="Highest and lowest value WAR"></p>
+<p class="cap">Figure 3. Value WAR = on-field WAR minus wins the contract bought at $6.45M per win.</p>
+
+<p><strong>High.</strong> Ty France (FA): 5.4 WAR, $1.35M, value WAR +5.2, surplus about +$34M. He signed what was effectively a flyer, then played like a regular (29 batting runs, 8 OAA / +6 runs at first base). That gap is the contract, not a forecast that he is a $34 million player next winter.</p>
+
+<p>Other high value WAR: Ceddanne Rafaela (pre-arb), Drake Baldwin (pre-arb), Gabriel Moreno (arb), Willson Contreras (FA, $14.1M, 6.2 WAR), Nolan Arenado (arb, $5M).</p>
+
+<p><strong>Roughly fair.</strong> Pete Alonso: 6.1 WAR at $31M, value WAR +1.3.</p>
+
+<p><strong>Low.</strong> Kyle Tucker (LAD): $57.2M, 1.4 WAR (−8 OAA in RF), value WAR −7.5, surplus about −$48M. The Dodgers paid for several years as one of the better all-around outfielders. 2026 was a down year, and almost no single season covers $57M at $6.5M per win.</p>
+
+<p>Also low: Bo Bichette, Vladimir Guerrero Jr., Marcus Semien, Aaron Judge (1.6 WAR in 285 PA at $40M — playing time as much as rate), Juan Soto. Shohei Ohtani appears overpaid on this board because this WAR is a hitter WAR. Pitching is not in the number. Don’t read him as a failed $46M bat without saying that.</p>
+
+<h2>5. Data sources</h2>
+<ol>
+  <li>MLB Advanced Media, Baseball Savant / Statcast, 2026 regular season. Pitch-level pull via <code>sabRmetrics</code>. OAA leaderboard: <a href="https://baseballsavant.mlb.com/leaderboard/outs_above_average">outs above average</a>.</li>
+  <li>Spotrac, 2026 MLB salaries and service class.</li>
+</ol>
+
+<p>Code that rebuilds WAR and the figures is <code>analysis.qmd</code> in the same repo.</p>
+</body>
+</html>

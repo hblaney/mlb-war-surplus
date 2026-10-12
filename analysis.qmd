@@ -1,0 +1,283 @@
+---
+title: "Custom 2026 WAR and surplus value"
+author: "Henry Blaney"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+Pipeline: Statcast PA → batting RAA + Statcast OAA (runs prevented) → replacement → WAR → FA $/win → surplus and value WAR.
+
+Glove is **Outs Above Average**, not xBA. Savant already translates those outs into `fielding_runs_prevented` with a position-specific run value. Catchers and DH are not on this leaderboard, so they get 0 glove.
+
+Set `rebuild <- TRUE` (or delete `data/player_war_2026.csv`) to rebuild WAR from Statcast. Otherwise salary starts from the committed CSV.
+
+```{r}
+library(tidyverse)
+library(sabRmetrics)
+
+rebuild <- !file.exists("data/player_war_2026.csv")
+dir.create("data", showWarnings = FALSE)
+dir.create("figs", showWarnings = FALSE)
+```
+
+# Statcast OAA
+
+```{r}
+oaa_file <- "data/oaa_2026.csv"
+if (!file.exists(oaa_file)) {
+  utils::download.file(
+    paste0(
+      "https://baseballsavant.mlb.com/leaderboard/outs_above_average",
+      "?type=Fielder&startYear=2026&endYear=2026&split=no",
+      "&team=&range=year&min=1&pos=&roles=&viz=hide&csv=true"
+    ),
+    destfile = oaa_file,
+    quiet = TRUE
+  )
+}
+
+oaa <- readr::read_csv(oaa_file, show_col_types = FALSE) |>
+  dplyr::transmute(
+    batter_id = as.numeric(player_id),
+    OAA = as.numeric(outs_above_average),
+    RAA_f = as.numeric(fielding_runs_prevented),
+    oaa_pos = primary_pos_formatted
+  )
+```
+
+# Statcast and batting
+
+```{r}
+if (rebuild) {
+  rds <- if (file.exists("statcast_2026.rds")) {
+    "statcast_2026.rds"
+  } else {
+    "/Users/henry/Downloads/statcast_2026.rds"
+  }
+
+  if (file.exists(rds)) {
+    raw_statcast2026 <- readRDS(rds)
+  } else {
+    n_cores <- parallelly::availableCores()
+    if (n_cores >= 4) {
+      cluster <- parallel::makeCluster(n_cores - 2)
+      raw_statcast2026 <- sabRmetrics::download_baseballsavant(
+        start_date = "2026-01-01",
+        end_date = "2026-12-31",
+        cl = cluster
+      )
+      parallel::stopCluster(cluster)
+    } else {
+      raw_statcast2026 <- sabRmetrics::download_baseballsavant(
+        start_date = "2026-01-01",
+        end_date = "2026-12-31"
+      )
+    }
+    saveRDS(raw_statcast2026, "statcast_2026.rds")
+  }
+
+  pa <- raw_statcast2026 |>
+    dplyr::filter(!is.na(events))
+
+  all_batters <- pa |>
+    dplyr::group_by(batter_id, batter_name) |>
+    dplyr::summarise(
+      PA = n(),
+      off_runs = sum(delta_run_exp, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    dplyr::arrange(dplyr::desc(PA))
+
+  league_off_avg <- sum(all_batters$off_runs) / sum(all_batters$PA)
+
+  all_batters <- all_batters |>
+    dplyr::left_join(oaa, by = "batter_id") |>
+    dplyr::mutate(
+      OAA = tidyr::replace_na(OAA, 0),
+      RAA_f = tidyr::replace_na(RAA_f, 0),
+      RAA_b = off_runs - league_off_avg * PA,
+      total_raa = RAA_b + RAA_f
+    )
+
+  above_replacement <- all_batters |> dplyr::slice_head(n = 390)
+  replacement_players <- all_batters |>
+    dplyr::slice_tail(n = nrow(all_batters) - 390)
+
+  replacement_avg <- sum(replacement_players$total_raa) /
+    sum(replacement_players$PA)
+
+  player_stats <- above_replacement |>
+    dplyr::mutate(
+      shadowRAA = PA * replacement_avg,
+      WAR = (total_raa - shadowRAA) / 10
+    ) |>
+    dplyr::arrange(dplyr::desc(WAR))
+
+  write.csv(player_stats, "data/player_war_2026.csv", row.names = FALSE)
+} else {
+  player_stats <- read.csv("data/player_war_2026.csv")
+}
+
+head(player_stats, 10)
+```
+
+Regulars = top 390 in PA (13 jobs × 30 teams). Catchers/DH have RAA_f = 0 because they are not on the IF/OF OAA board.
+
+# Salaries and the FA price of a win
+
+```{r}
+salaries <- readr::read_csv(
+  "data/salaries_2026.csv",
+  col_select = 1:8,
+  show_col_types = FALSE
+) |>
+  dplyr::filter(!is.na(batter_id)) |>
+  dplyr::select(
+    batter_id, team = Team, name = Name, salary = salaries,
+    service_class, extension, notes
+  ) |>
+  dplyr::mutate(
+    salary_m = salary / 1e6,
+    extension = trimws(extension),
+    free_agent = service_class == "FA"
+  )
+
+dat <- player_stats |>
+  dplyr::inner_join(salaries, by = "batter_id") |>
+  dplyr::filter(!is.na(salary_m))
+
+dat |> dplyr::count(service_class)
+
+fa <- dat |> dplyr::filter(free_agent)
+rate_fit <- lm(salary_m ~ 0 + WAR, data = fa)
+rate <- unname(coef(rate_fit)["WAR"])
+rate
+```
+
+Value WAR = on-field WAR minus wins the contract bought at this rate.
+
+```{r}
+dat <- dat |>
+  dplyr::mutate(
+    expected_salary_m = pmax(rate * WAR, 0),
+    surplus_m = expected_salary_m - salary_m,
+    war_over_contract = WAR - salary_m / rate
+  )
+
+cols <- c(
+  "batter_name", "team", "service_class", "PA", "WAR", "salary_m",
+  "expected_salary_m", "surplus_m", "war_over_contract"
+)
+
+dat |>
+  dplyr::arrange(dplyr::desc(war_over_contract)) |>
+  dplyr::select(dplyr::all_of(cols)) |>
+  head(8)
+
+dat |>
+  dplyr::arrange(war_over_contract) |>
+  dplyr::select(dplyr::all_of(cols)) |>
+  head(8)
+
+dat |>
+  dplyr::group_by(service_class) |>
+  dplyr::summarise(
+    n = dplyr::n(),
+    mean_WAR = mean(WAR),
+    mean_salary_m = mean(salary_m),
+    mean_surplus_m = mean(surplus_m),
+    .groups = "drop"
+  )
+
+write.csv(dat, "data/player_value_2026.csv", row.names = FALSE)
+```
+
+Ohtani is hitter WAR plus whatever OAA he has as a DH/OF. Pitching is not in this number.
+
+# Does WAR explain salary?
+
+```{r}
+cor(fa$WAR, fa$salary_m)
+summary(lm(salary_m ~ WAR, data = fa))
+
+pal <- c(FA = "firebrick", Arb = "steelblue", "Pre-Arb" = "darkgreen")
+png("figs/war_vs_salary.png", width = 2200, height = 1400, res = 180)
+par(mar = c(6.2, 6.5, 4.5, 1.5), cex.lab = 2.1, cex.axis = 1.9, cex.main = 2.0)
+plot(
+  dat$WAR, dat$salary_m,
+  pch = 16, cex = 1.35,
+  col = pal[dat$service_class],
+  xlab = "2026 custom WAR (OAA glove)",
+  ylab = "2026 salary ($ millions)",
+  main = sprintf("FA price: $%.1fM per WAR", rate)
+)
+abline(a = 0, b = rate, lwd = 4)
+legend(
+  "topleft",
+  legend = c("FA", "Arb", "Pre-Arb", sprintf("$%.1fM / WAR", rate)),
+  col = c(pal["FA"], pal["Arb"], pal["Pre-Arb"], "black"),
+  pch = c(16, 16, 16, NA),
+  lty = c(NA, NA, NA, 1),
+  lwd = c(NA, NA, NA, 4),
+  cex = 1.7, bty = "n", pt.cex = 1.6
+)
+dev.off()
+```
+
+```{r}
+by_class <- dat |>
+  dplyr::group_by(service_class) |>
+  dplyr::summarise(
+    mean_surplus = mean(surplus_m),
+    n = n(),
+    .groups = "drop"
+  )
+by_class$service_class <- factor(
+  by_class$service_class,
+  levels = c("Pre-Arb", "Arb", "FA")
+)
+by_class <- by_class[order(by_class$service_class), ]
+cols_bar <- c("Pre-Arb" = "#2E7D32", Arb = "#3A6EA5", FA = "#B22222")
+
+png("figs/surplus_by_class.png", width = 2000, height = 1400, res = 180)
+par(mar = c(5.5, 7.2, 4.5, 1.2), cex.lab = 2.1, cex.axis = 1.9, cex.main = 2.0)
+bp <- barplot(
+  by_class$mean_surplus,
+  names.arg = paste0(by_class$service_class, "\n(n=", by_class$n, ")"),
+  col = cols_bar[as.character(by_class$service_class)],
+  ylab = "Mean surplus ($ millions)",
+  main = "Pre-arb and arb beat the FA price. FAs do not.",
+  ylim = c(min(by_class$mean_surplus) - 2, max(by_class$mean_surplus) + 3)
+)
+abline(h = 0, lwd = 2)
+text(
+  bp, by_class$mean_surplus + ifelse(by_class$mean_surplus >= 0, 0.7, -0.7),
+  labels = sprintf("%+.1f", by_class$mean_surplus),
+  cex = 2.0, font = 2
+)
+dev.off()
+```
+
+```{r}
+hi <- dat |>
+  dplyr::arrange(dplyr::desc(war_over_contract)) |>
+  head(6)
+lo <- dat |>
+  dplyr::arrange(war_over_contract) |>
+  head(6)
+both <- rbind(lo, hi)
+
+png("figs/value_war.png", width = 2000, height = 1400, res = 180)
+par(mar = c(5, 10, 4, 2), cex.axis = 1.2, cex.lab = 1.4, cex.main = 1.5)
+barplot(
+  both$war_over_contract,
+  names.arg = both$batter_name,
+  horiz = TRUE, las = 1,
+  xlab = sprintf("Value WAR (WAR - salary / $%.1fM)", rate),
+  main = "Value WAR"
+)
+abline(v = 0, lwd = 2)
+dev.off()
+```
