@@ -2,7 +2,7 @@
 
 I built a 2026 position-player WAR from Statcast batting and OAA, priced a win off free agents, then compared that to what guys actually made.
 
-The memo is [here](https://YOURUSERNAME.github.io/mlb-war-surplus/report.html).
+The memo is [here](https://hblaney.github.io/mlb-war-surplus/report.html).
 
 xBA fielding had Brandon Lowe at 8 WAR with +32 glove runs. That was the model, not him. With OAA, Crow-Armstrong is 10.1 WAR (26 OAA) and Lowe is 5.9 (15 OAA).
 
